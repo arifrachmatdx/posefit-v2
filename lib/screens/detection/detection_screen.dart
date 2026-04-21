@@ -1,12 +1,11 @@
 import 'dart:async';
-
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import '../../main.dart';
 import '../../models/exercise_model.dart';
-import '../../models/workout_history_model.dart';
-import '../../services/history_service.dart';
 import '../menu/hasil_latihan_screen.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class DetectionScreen extends StatefulWidget {
   final ExerciseModel exercise;
@@ -17,22 +16,49 @@ class DetectionScreen extends StatefulWidget {
   State<DetectionScreen> createState() => _DetectionScreenState();
 }
 
-class _DetectionScreenState extends State<DetectionScreen> {
+class _DetectionScreenState extends State<DetectionScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _animationController;
+  late Animation<double> _scaleAnimation;
+
   int repetitionCount = 0;
-  String detectionStatus = 'Kamera belum aktif';
+  int elapsedSeconds = 0;
+  int countdown = 5;
+  int remainingSeconds = 0;
+
+  bool isWorkoutStarted = false;
+  bool isWorkoutFinished = false;
+  bool isCameraInitialized = false;
+  bool isCountingDown = true;
+
+  String detectionStatus = "Bersiap memulai latihan";
+  String countdownText = "5";
 
   CameraController? cameraController;
-  bool isCameraInitialized = false;
-
   Timer? stopwatchTimer;
-  int elapsedSeconds = 0;
-  bool isWorkoutFinished = false;
+  Timer? countdownTimer;
+  Timer? workoutTimer;
 
   @override
   void initState() {
     super.initState();
+
     initializeCamera();
-    startStopwatch();
+
+    remainingSeconds = widget.exercise.targetDurationInSeconds;
+
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.5, end: 1.4).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeOutBack),
+    );
+
+    _animationController.forward();
+
+    startCountdown();
   }
 
   Future<void> initializeCamera() async {
@@ -65,6 +91,51 @@ class _DetectionScreenState extends State<DetectionScreen> {
     }
   }
 
+  void startCountdown() {
+    countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) return;
+
+      if (countdown > 1) {
+        setState(() {
+          countdown--;
+          countdownText = "$countdown";
+          detectionStatus = "Latihan dimulai dalam $countdown";
+        });
+        _animationController.forward(from: 0);
+      } else if (countdown == 1) {
+        setState(() {
+          countdown = 0;
+          countdownText = "GO!";
+          detectionStatus = "Latihan dimulai";
+        });
+      } else {
+        timer.cancel();
+
+        setState(() {
+          isCountingDown = false;
+          isWorkoutStarted = true;
+        });
+
+        startStopwatch();
+        startWorkoutTimer();
+      }
+    });
+  }
+
+  void startWorkoutTimer() {
+    workoutTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted || isWorkoutFinished) return;
+
+      setState(() {
+        remainingSeconds--;
+      });
+
+      if (remainingSeconds <= 0) {
+        finishWorkout();
+      }
+    });
+  }
+
   void startStopwatch() {
     stopwatchTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted || isWorkoutFinished) return;
@@ -85,41 +156,42 @@ class _DetectionScreenState extends State<DetectionScreen> {
     return '$minuteText:$secondText';
   }
 
+  Future<void> saveWorkoutToFirestore() async {
+    final user = FirebaseAuth.instance.currentUser;
+
+    if (user == null) return;
+
+    await FirebaseFirestore.instance.collection('workout_history').add({
+      "userId": user.uid,
+      "exerciseTitle": widget.exercise.title,
+      "category": widget.exercise.category,
+      "repetition": repetitionCount,
+      "duration": elapsedSeconds,
+      "date": Timestamp.now(),
+    });
+  }
+
   void tambahRepetisiDummy() {
+    if (!isWorkoutStarted) return;
     if (isWorkoutFinished) return;
 
     setState(() {
       repetitionCount++;
-      detectionStatus = 'Gerakan benar terdeteksi';
+      detectionStatus = "Gerakan terdeteksi";
     });
-
-    checkWorkoutCompletion();
   }
 
-  void checkWorkoutCompletion() {
-    if (repetitionCount >= widget.exercise.targetRepetition) {
-      finishWorkout();
-    }
-  }
-
-  void finishWorkout() {
+  Future<void> finishWorkout() async {
     if (isWorkoutFinished) return;
 
     isWorkoutFinished = true;
+
     stopwatchTimer?.cancel();
+    workoutTimer?.cancel();
 
-    final now = DateTime.now();
+    await saveWorkoutToFirestore();
 
-    final history = WorkoutHistoryModel(
-      exerciseTitle: widget.exercise.title,
-      category: widget.exercise.category,
-      repetitionCount: repetitionCount,
-      dateTimeText:
-          '${now.day}/${now.month}/${now.year} ${now.hour}:${now.minute.toString().padLeft(2, '0')}',
-      durationText: formatDuration(elapsedSeconds),
-    );
-
-    HistoryService.addHistory(history);
+    if (!mounted) return;
 
     Navigator.pushReplacement(
       context,
@@ -135,8 +207,11 @@ class _DetectionScreenState extends State<DetectionScreen> {
 
   @override
   void dispose() {
+    countdownTimer?.cancel();
     stopwatchTimer?.cancel();
+    workoutTimer?.cancel();
     cameraController?.dispose();
+    _animationController.dispose();
     super.dispose();
   }
 
@@ -147,10 +222,6 @@ class _DetectionScreenState extends State<DetectionScreen> {
 
     return Scaffold(
       appBar: AppBar(title: Text(widget.exercise.title), centerTitle: true),
-      floatingActionButton: FloatingActionButton(
-        onPressed: tambahRepetisiDummy,
-        child: const Icon(Icons.add),
-      ),
       body: SafeArea(
         child: Column(
           children: [
@@ -169,7 +240,30 @@ class _DetectionScreenState extends State<DetectionScreen> {
                         cameraController!.value.isInitialized
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(16),
-                        child: CameraPreview(cameraController!),
+                        child: Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            CameraPreview(cameraController!),
+
+                            if (isCountingDown)
+                              Container(
+                                color: Colors.black.withOpacity(0.35),
+                                child: Center(
+                                  child: ScaleTransition(
+                                    scale: _scaleAnimation,
+                                    child: Text(
+                                      countdownText,
+                                      style: const TextStyle(
+                                        fontSize: 90,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
                       )
                     : const Center(child: CircularProgressIndicator()),
               ),
@@ -186,20 +280,18 @@ class _DetectionScreenState extends State<DetectionScreen> {
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
+                    /// REPS
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
-                          'Repetisi',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          "Repetisi",
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          progressText,
+                          "$repetitionCount",
                           style: const TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
@@ -208,23 +300,27 @@ class _DetectionScreenState extends State<DetectionScreen> {
                         ),
                       ],
                     ),
+
+                    /// PROGRESS
                     LinearProgressIndicator(
-                      value: repetitionCount / widget.exercise.targetRepetition,
+                      value:
+                          (elapsedSeconds /
+                                  widget.exercise.targetDurationInSeconds)
+                              .clamp(0.0, 1.0),
                       minHeight: 10,
                       borderRadius: BorderRadius.circular(10),
                     ),
+
+                    /// TIMER
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         const Text(
-                          'Waktu',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
+                          "Sisa Waktu",
+                          style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         Text(
-                          formatDuration(elapsedSeconds),
+                          formatDuration(remainingSeconds),
                           style: const TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.bold,
@@ -233,10 +329,12 @@ class _DetectionScreenState extends State<DetectionScreen> {
                         ),
                       ],
                     ),
+
+                    /// STATUS
                     Row(
                       children: [
                         const Text(
-                          'Status: ',
+                          "Status: ",
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         Expanded(
@@ -247,6 +345,15 @@ class _DetectionScreenState extends State<DetectionScreen> {
                         ),
                       ],
                     ),
+                    if (isWorkoutStarted)
+                      ElevatedButton(
+                        onPressed: tambahRepetisiDummy,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          minimumSize: const Size(double.infinity, 45),
+                        ),
+                        child: const Text("Tambah Repetisi (Test)"),
+                      ),
                   ],
                 ),
               ),

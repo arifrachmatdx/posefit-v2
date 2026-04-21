@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'kategori_gerakan_screen.dart';
 import 'riwayat_latihan_screen.dart';
+import '../../utils/seed_exercises.dart';
 
 class MainMenuScreen extends StatelessWidget {
   const MainMenuScreen({super.key});
@@ -141,6 +142,12 @@ class MainMenuScreen extends StatelessWidget {
                       },
                     ),
                   ),
+                  // ElevatedButton(
+                  //   onPressed: () async {
+                  //     await seedExercises();
+                  //   },
+                  //   child: const Text("Upload Exercises"),
+                  // ),
                 ],
               ),
             );
