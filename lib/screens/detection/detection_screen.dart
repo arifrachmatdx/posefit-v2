@@ -7,6 +7,12 @@ import '../menu/hasil_latihan_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'package:flutter/foundation.dart';
+import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
+
+import '../../logic/pose_detector_service.dart';
+import '../../widgets/pose_painter.dart';
+
 class DetectionScreen extends StatefulWidget {
   final ExerciseModel exercise;
 
@@ -20,6 +26,12 @@ class _DetectionScreenState extends State<DetectionScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _animationController;
   late Animation<double> _scaleAnimation;
+
+  final PoseDetectorService _poseService = PoseDetectorService();
+
+  bool _isProcessing = false;
+  List<Pose> _poses = [];
+  Size _imageSize = Size.zero;
 
   int repetitionCount = 0;
   int elapsedSeconds = 0;
@@ -70,23 +82,35 @@ class _DetectionScreenState extends State<DetectionScreen>
         return;
       }
 
+      final frontCamera = cameras.firstWhere(
+        (camera) => camera.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+
       cameraController = CameraController(
-        cameras[0],
+        frontCamera,
         ResolutionPreset.medium,
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.nv21,
       );
 
       await cameraController!.initialize();
+
+      await cameraController!.startImageStream((CameraImage image) {
+        processCameraImage(image);
+      });
 
       if (!mounted) return;
 
       setState(() {
         isCameraInitialized = true;
-        detectionStatus = 'Kamera aktif';
+        detectionStatus = 'Kamera depan aktif';
       });
     } catch (e) {
+      if (!mounted) return;
+
       setState(() {
-        detectionStatus = 'Gagal membuka kamera: $e';
+        detectionStatus = 'Gagal membuka kamera';
       });
     }
   }
@@ -156,6 +180,85 @@ class _DetectionScreenState extends State<DetectionScreen>
     return '$minuteText:$secondText';
   }
 
+  InputImage? _convertCameraImage(CameraImage image) {
+    try {
+      final camera = cameraController?.description;
+      if (camera == null) return null;
+
+      final rotation = InputImageRotationValue.fromRawValue(
+        camera.sensorOrientation,
+      );
+      if (rotation == null) return null;
+
+      final format = InputImageFormatValue.fromRawValue(image.format.raw);
+      if (format == null) return null;
+
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      final bytes = allBytes.done().buffer.asUint8List();
+
+      final metadata = InputImageMetadata(
+        size: Size(image.width.toDouble(), image.height.toDouble()),
+        rotation: rotation,
+        format: format,
+        bytesPerRow: image.planes.first.bytesPerRow,
+      );
+
+      return InputImage.fromBytes(bytes: bytes, metadata: metadata);
+    } catch (e) {
+      debugPrint('convert image error: $e');
+      return null;
+    }
+  }
+
+  Future<void> processCameraImage(CameraImage image) async {
+    if (!isWorkoutStarted || isWorkoutFinished) return;
+    if (_isProcessing) return;
+
+    _isProcessing = true;
+
+    try {
+      debugPrint('raw image format: ${image.format.raw}');
+      debugPrint('planes length: ${image.planes.length}');
+
+      final inputImage = _convertCameraImage(image);
+      if (inputImage == null) {
+        if (mounted) {
+          setState(() {
+            detectionStatus = 'Format gambar tidak didukung';
+          });
+        }
+        return;
+      }
+
+      final poses = await _poseService.processImage(inputImage);
+
+      if (!mounted) return;
+
+      setState(() {
+        _poses = poses;
+        _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+
+        if (poses.isNotEmpty) {
+          detectionStatus = 'Tubuh terdeteksi';
+        } else {
+          detectionStatus = 'Tidak ada pose';
+        }
+      });
+    } catch (e) {
+      debugPrint('pose detection error: $e');
+
+      if (!mounted) return;
+      setState(() {
+        detectionStatus = 'Error deteksi pose';
+      });
+    } finally {
+      _isProcessing = false;
+    }
+  }
+
   Future<void> saveWorkoutToFirestore() async {
     final user = FirebaseAuth.instance.currentUser;
 
@@ -212,6 +315,7 @@ class _DetectionScreenState extends State<DetectionScreen>
     workoutTimer?.cancel();
     cameraController?.dispose();
     _animationController.dispose();
+    _poseService.dispose();
     super.dispose();
   }
 
@@ -240,29 +344,61 @@ class _DetectionScreenState extends State<DetectionScreen>
                         cameraController!.value.isInitialized
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(16),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            CameraPreview(cameraController!),
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final previewSize =
+                                cameraController!.value.previewSize!;
 
-                            if (isCountingDown)
-                              Container(
-                                color: Colors.black.withOpacity(0.35),
-                                child: Center(
-                                  child: ScaleTransition(
-                                    scale: _scaleAnimation,
-                                    child: Text(
-                                      countdownText,
-                                      style: const TextStyle(
-                                        fontSize: 90,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.white,
+                            return FittedBox(
+                              fit: BoxFit.cover,
+                              child: SizedBox(
+                                width: previewSize.height,
+                                height: previewSize.width,
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    CameraPreview(cameraController!),
+
+                                    if (_poses.isNotEmpty)
+                                      CustomPaint(
+                                        painter: PosePainter(
+                                          poses: _poses,
+                                          imageSize: Size(
+                                            previewSize.height,
+                                            previewSize.width,
+                                          ),
+                                          isFrontCamera:
+                                              cameraController!
+                                                  .description
+                                                  .lensDirection ==
+                                              CameraLensDirection.front,
+                                        ),
                                       ),
-                                    ),
-                                  ),
+
+                                    if (isCountingDown)
+                                      Container(
+                                        color: Colors.black.withOpacity(0.35),
+                                        child: Center(
+                                          child: ScaleTransition(
+                                            scale: _scaleAnimation,
+                                            child: Text(
+                                              countdownText,
+                                              style: TextStyle(
+                                                fontSize: 90,
+                                                fontWeight: FontWeight.bold,
+                                                color: countdownText == 'GO!'
+                                                    ? Colors.greenAccent
+                                                    : Colors.white,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
                                 ),
                               ),
-                          ],
+                            );
+                          },
                         ),
                       )
                     : const Center(child: CircularProgressIndicator()),
@@ -345,15 +481,15 @@ class _DetectionScreenState extends State<DetectionScreen>
                         ),
                       ],
                     ),
-                    if (isWorkoutStarted)
-                      ElevatedButton(
-                        onPressed: tambahRepetisiDummy,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blue,
-                          minimumSize: const Size(double.infinity, 45),
-                        ),
-                        child: const Text("Tambah Repetisi (Test)"),
-                      ),
+                    // if (isWorkoutStarted)
+                    //   ElevatedButton(
+                    //     onPressed: tambahRepetisiDummy,
+                    //     style: ElevatedButton.styleFrom(
+                    //       backgroundColor: Colors.blue,
+                    //       minimumSize: const Size(double.infinity, 45),
+                    //     ),
+                    //     child: const Text("Tambah Repetisi (Test)"),
+                    //   ),
                   ],
                 ),
               ),
