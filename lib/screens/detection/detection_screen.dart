@@ -12,6 +12,7 @@ import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 
 import '../../logic/pose_detector_service.dart';
 import '../../widgets/pose_painter.dart';
+import '../../models/exercise_detection_result.dart';
 
 class DetectionScreen extends StatefulWidget {
   final ExerciseModel exercise;
@@ -38,6 +39,8 @@ class _DetectionScreenState extends State<DetectionScreen>
   int countdown = 5;
   int remainingSeconds = 0;
 
+  ExerciseDetectionResult _exerciseResult = ExerciseDetectionResult.initial();
+
   bool isWorkoutStarted = false;
   bool isWorkoutFinished = false;
   bool isCameraInitialized = false;
@@ -58,6 +61,7 @@ class _DetectionScreenState extends State<DetectionScreen>
     initializeCamera();
 
     remainingSeconds = widget.exercise.targetDurationInSeconds;
+    _poseService.resetExercise(widget.exercise.type);
 
     _animationController = AnimationController(
       vsync: this,
@@ -237,16 +241,27 @@ class _DetectionScreenState extends State<DetectionScreen>
 
       if (!mounted) return;
 
-      setState(() {
-        _poses = poses;
-        _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+      if (poses.isNotEmpty) {
+        final result = _poseService.processExercise(
+          exerciseType: widget.exercise.type,
+          pose: poses.first,
+        );
 
-        if (poses.isNotEmpty) {
-          detectionStatus = 'Tubuh terdeteksi';
-        } else {
+        setState(() {
+          _poses = poses;
+          _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+
+          _exerciseResult = result;
+          repetitionCount = result.repetition;
+          detectionStatus = result.status;
+        });
+      } else {
+        setState(() {
+          _poses = [];
+          _imageSize = Size(image.width.toDouble(), image.height.toDouble());
           detectionStatus = 'Tidak ada pose';
-        }
-      });
+        });
+      }
     } catch (e) {
       debugPrint('pose detection error: $e');
 
