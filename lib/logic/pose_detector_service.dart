@@ -24,36 +24,38 @@ class PoseDetectorService {
   }) {
     switch (exerciseType) {
       case ExerciseType.pushUp:
-        final repetition = _pushUpLogic.detect(pose);
-        return ExerciseDetectionResult(
-          repetition: repetition,
-          status: _pushUpLogic.isDown
-              ? 'Posisi bawah push-up'
-              : 'Push-up terdeteksi',
-        );
+        return _pushUpLogic.detect(pose);
 
       case ExerciseType.squat:
         return const ExerciseDetectionResult(
           repetition: 0,
           status: 'Logika squat belum dipasang',
+          isValidPose: false,
+          stage: 'idle',
         );
 
       case ExerciseType.jumpingJack:
         return const ExerciseDetectionResult(
           repetition: 0,
           status: 'Logika jumping jack belum dipasang',
+          isValidPose: false,
+          stage: 'idle',
         );
 
       case ExerciseType.plank:
         return const ExerciseDetectionResult(
           repetition: 0,
           status: 'Logika plank belum dipasang',
+          isValidPose: false,
+          stage: 'idle',
         );
 
       case ExerciseType.highKnees:
         return const ExerciseDetectionResult(
           repetition: 0,
           status: 'Logika high knees belum dipasang',
+          isValidPose: false,
+          stage: 'idle',
         );
     }
   }
@@ -61,8 +63,7 @@ class PoseDetectorService {
   void resetExercise(ExerciseType exerciseType) {
     switch (exerciseType) {
       case ExerciseType.pushUp:
-        _pushUpLogic.isDown = false;
-        _pushUpLogic.repetition = 0;
+        _pushUpLogic.reset();
         break;
 
       case ExerciseType.squat:
