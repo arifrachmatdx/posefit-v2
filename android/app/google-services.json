@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "441881788885",
+    "project_id": "posefit-964dd",
+    "storage_bucket": "posefit-964dd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:441881788885:android:1a6147fdeef4ad94f87d5c",
+        "android_client_info": {
+          "package_name": "com.example.posefit"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDFGddZ4nAaNWipyt6wKVkheQIk2-d4hjk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
